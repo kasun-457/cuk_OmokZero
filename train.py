@@ -3,6 +3,7 @@ import io
 import os
 import multiprocessing as mp
 import time
+from collections import deque
 from copy import deepcopy
 
 import numpy as np
@@ -69,29 +70,32 @@ def _play_one_game(net):
 def _worker_play_games(args):
     """
     Worker 프로세스 진입점.
-    매 워커는 자기만의 NeuralNetworkWrapper 를 만들고
-    여러 자기대국을 돌려 학습 데이터를 수집한다.
+    각 워커는 자체 네트워크를 GPU(또는 CPU)에 올리고 자기대국을 돌린다.
     """
-    state_dict_bytes, num_games, seed, worker_id = args
+    state_dict_bytes, num_games, seed, worker_id, device = args
 
-    # 워커마다 다른 시드 (탐색 다양성 확보)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    # 신경망 재구성 (각 워커는 CPU 사용; GPU 공유는 복잡해서 회피)
-    game = GomokuGame()
-    net = NeuralNetworkWrapper(game)
+    # GPU 메모리 효율을 위해 일부 PyTorch 설정 조정
+    if device == "cuda":
+        torch.backends.cudnn.benchmark = True
 
-    # state_dict 복원
+    game = GomokuGame()
+    net = NeuralNetworkWrapper(game, device=device)
+
+    # state_dict 복원 — 항상 CPU 에 먼저 로드한 뒤 디바이스로 이동
     buf = io.BytesIO(state_dict_bytes)
     state_dict = torch.load(buf, map_location="cpu")
     net.net.load_state_dict(state_dict)
+    net.net.to(net.device)
     net.net.eval()
 
     data = []
     for i in range(num_games):
         data.extend(_play_one_game(net))
-        print(f"  [worker {worker_id}] game {i+1}/{num_games} done", flush=True)
+        print(f"  [worker {worker_id} | {device}] game {i+1}/{num_games} done",
+              flush=True)
     return data
 
 
@@ -110,9 +114,24 @@ class Train:
         if CFG.num_workers > 0:
             self.num_workers = CFG.num_workers
         else:
-            self.num_workers = max(1, cores - 1)   # 1코어는 OS/메인에 양보
-        print(f"[Train] Using {self.num_workers} parallel workers "
-              f"(detected {cores} CPU cores)")
+            self.num_workers = max(1, min(12, cores - 1))
+
+        # 워커 디바이스 결정
+        self.worker_device = getattr(CFG, "worker_device", "cpu")
+        if self.worker_device == "cuda" and not torch.cuda.is_available():
+            print("[Train] CUDA unavailable for workers — using CPU")
+            self.worker_device = "cpu"
+
+        print(f"[Train] Using {self.num_workers} parallel workers on "
+              f"'{self.worker_device}' (detected {cores} CPU cores)")
+        if torch.cuda.is_available():
+            print(f"[Train] GPU: {torch.cuda.get_device_name(0)} | "
+                  f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
+
+        # Replay buffer: 최근 N 이터레이션의 자기대국 데이터 보존
+        buf_iters = getattr(CFG, "replay_buffer_iters", 5)
+        self.replay_buffer = deque(maxlen=buf_iters)
+        print(f"[Train] Replay buffer: keeping last {buf_iters} iterations")
 
     # ----------------------------------------------------------------
 
@@ -121,14 +140,23 @@ class Train:
             print(f"\n=== Iteration {iteration}/{CFG.num_iterations} ===")
 
             t0 = time.time()
-            training_data = self._parallel_self_play()
+            new_data = self._parallel_self_play()
             t_sp = time.time() - t0
-            print(f"  Self-play: {len(training_data)} samples "
+            print(f"  Self-play: {len(new_data)} samples "
                   f"in {t_sp:.1f}s ({CFG.num_games/t_sp:.2f} games/s)")
+
+            # Replay buffer 갱신: 새 데이터 추가, 오래된 건 자동 폐기
+            self.replay_buffer.append(new_data)
+            training_data = []
+            for chunk in self.replay_buffer:
+                training_data.extend(chunk)
+            print(f"  Replay buffer: {len(training_data)} total samples "
+                  f"({len(self.replay_buffer)} iterations stored)")
 
             self.net.save_model()
             self.eval_net.load_model()
             self.net.train(training_data)
+            self.net.step_scheduler()
 
             current_mcts = MonteCarloTreeSearch(self.net)
             eval_mcts = MonteCarloTreeSearch(self.eval_net)
@@ -161,7 +189,8 @@ class Train:
             per_worker[i] += 1
 
         args_list = [
-            (state_bytes, n, int(np.random.randint(0, 2**31 - 1)), wid)
+            (state_bytes, n, int(np.random.randint(0, 2**31 - 1)), wid,
+             self.worker_device)
             for wid, n in enumerate(per_worker) if n > 0
         ]
 

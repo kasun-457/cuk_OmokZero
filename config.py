@@ -3,31 +3,40 @@
 
 class CFG:
     # Self-play & training iterations
-    num_iterations = 50
-    num_games = 30          # was 100  (각 워커에 분배되므로 줄여도 OK)
-    num_mcts_sims = 50      # was 200  (4배 빠른 자기대국)
-    c_puct = 1.5
+    num_iterations = 80
+    num_games = 60                # iter 당 자기대국 수
+    num_mcts_sims = 400           # GPU 추론이라 더 많이 가능
+    c_puct = 2.0
 
     # Optimizer
     l2_val = 1e-4
     momentum = 0.9
     learning_rate = 0.01
+    lr_milestones = [20, 40, 60]
+    lr_gamma = 0.1
+    grad_clip = 1.0
 
     # Temperature schedule
     temp_init = 1.0
     temp_final = 0.01
-    temp_thresh = 15   # moves before switching to temp_final
+    temp_thresh = 15
 
-    # Network training
-    epochs = 3              # was 5
-    batch_size = 256
-    resnet_blocks = 3       # was 7  (네트워크 추론 ~2배 빠름)
+    # Network training (GPU 최적화)
+    epochs = 4
+    batch_size = 1024             # 3070 Ti VRAM 8GB 활용
+    resnet_blocks = 8             # 더 깊은 네트워크
+    num_channels = 192            # 채널 확장
+
+    # Replay buffer
+    replay_buffer_iters = 5
 
     # Parallel self-play
-    num_workers = 0         # 0 = auto (CPU 코어 수 - 1)
+    # GPU 워커: 3070 Ti 에 4개 정도가 적당 (워커당 ~1.5GB VRAM)
+    num_workers = 4
+    worker_device = "cuda"        # 워커도 GPU 사용 (네트워크 큰 경우 필수)
 
     # Dirichlet exploration noise
-    dirichlet_alpha = 0.03   # smaller for larger action spaces
+    dirichlet_alpha = 0.15        # 11x11 에 맞춤 (이전 0.03 은 너무 적음)
     epsilon = 0.25
 
     # Model persistence

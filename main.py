@@ -2,6 +2,8 @@
 import argparse
 import os
 
+import torch
+
 from config import CFG
 from gomoku.gomoku_game import GomokuGame
 from neural_net import NeuralNetworkWrapper
@@ -40,6 +42,14 @@ if __name__ == "__main__":
     CFG.num_eval_games = args.num_eval_games
     CFG.load_model = bool(args.load_model)
     CFG.human_play = bool(args.human_play)
+
+    print("=" * 60)
+    if torch.cuda.is_available():
+        print(f"[Main] GPU detected: {torch.cuda.get_device_name(0)}")
+        print(f"[Main] CUDA: {torch.version.cuda} | PyTorch: {torch.__version__}")
+    else:
+        print("[Main] CUDA not available — running on CPU")
+    print("=" * 60)
 
     game = GomokuGame()
     net = NeuralNetworkWrapper(game)

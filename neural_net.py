@@ -92,15 +92,21 @@ class GomokuNet(nn.Module):
 # ---------------------------------------------------------------------------
 
 class NeuralNetworkWrapper:
-    def __init__(self, game):
+    def __init__(self, game, device=None):
         self.board_size = game.row
         self.action_size = game.action_size
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
+            if self.device.type == "cuda" and not torch.cuda.is_available():
+                print("[WARN] CUDA requested but unavailable — falling back to CPU")
+                self.device = torch.device("cpu")
 
         self.net = GomokuNet(
             board_size=self.board_size,
             action_size=self.action_size,
-            num_channels=128,
+            num_channels=getattr(CFG, "num_channels", 128),
             num_blocks=CFG.resnet_blocks,
         ).to(self.device)
 
@@ -109,6 +115,13 @@ class NeuralNetworkWrapper:
             lr=CFG.learning_rate,
             momentum=CFG.momentum,
             weight_decay=CFG.l2_val,
+        )
+
+        # LR scheduler: step decay at configured iteration milestones
+        self.scheduler = optim.lr_scheduler.MultiStepLR(
+            self.optimizer,
+            milestones=getattr(CFG, "lr_milestones", [20, 40, 60]),
+            gamma=getattr(CFG, "lr_gamma", 0.1),
         )
 
     # ------------------------------------------------------------------
@@ -151,6 +164,11 @@ class NeuralNetworkWrapper:
                 v_loss = F.mse_loss(v_pred, v_target)
                 loss = pi_loss + v_loss
                 loss.backward()
+                # Gradient clipping for training stability
+                torch.nn.utils.clip_grad_norm_(
+                    self.net.parameters(),
+                    max_norm=getattr(CFG, "grad_clip", 1.0),
+                )
                 self.optimizer.step()
 
                 total_pi_loss += pi_loss.item()
@@ -185,3 +203,9 @@ class NeuralNetworkWrapper:
         self.net.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
         print(f"Model loaded: {path}")
+
+    def step_scheduler(self):
+        """이터레이션 끝에서 호출 — LR 감소."""
+        self.scheduler.step()
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        print(f"  LR now: {current_lr:.5f}")
