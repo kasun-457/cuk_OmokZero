@@ -4,8 +4,8 @@
 class CFG:
     # Self-play & training iterations
     num_iterations = 50
-    num_games = 100
-    num_mcts_sims = 200
+    num_games = 30          # was 100  (각 워커에 분배되므로 줄여도 OK)
+    num_mcts_sims = 50      # was 200  (4배 빠른 자기대국)
     c_puct = 1.5
 
     # Optimizer
@@ -19,9 +19,12 @@ class CFG:
     temp_thresh = 15   # moves before switching to temp_final
 
     # Network training
-    epochs = 5
+    epochs = 3              # was 5
     batch_size = 256
-    resnet_blocks = 7
+    resnet_blocks = 3       # was 7  (네트워크 추론 ~2배 빠름)
+
+    # Parallel self-play
+    num_workers = 0         # 0 = auto (CPU 코어 수 - 1)
 
     # Dirichlet exploration noise
     dirichlet_alpha = 0.03   # smaller for larger action spaces
