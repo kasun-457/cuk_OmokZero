@@ -136,6 +136,11 @@ class Train:
     # ----------------------------------------------------------------
 
     def start(self):
+        # 평가 기준선(직전 iteration 모델)을 위한 시드 저장.
+        # 초기 가중치를 current_model / best_model 로 한 번 기록해 둔다.
+        self.net.save_model()
+        self.net.save_model("best_model")
+
         for iteration in range(1, CFG.num_iterations + 1):
             print(f"\n=== Iteration {iteration}/{CFG.num_iterations} ===")
 
@@ -153,11 +158,19 @@ class Train:
             print(f"  Replay buffer: {len(training_data)} total samples "
                   f"({len(self.replay_buffer)} iterations stored)")
 
-            self.net.save_model()
+            # 평가 기준선 = 직전 iteration 에서 채택된 모델(current_model)
             self.eval_net.load_model()
+
+            # 학습
             self.net.train(training_data)
             self.net.step_scheduler()
 
+            # === 항상 학습 결과를 채택(누적). 절대 되돌리지 않는다. ===
+            # (구버전은 eval 승률 < 0.55 면 학습을 통째로 폐기해 정책이
+            #  균일분포에서 못 벗어났음. 현대 AlphaZero 방식으로 변경.)
+            self.net.save_model()
+
+            # 평가는 '진척도 로깅 + best 추적' 용도로만 사용 (게이트 아님)
             current_mcts = MonteCarloTreeSearch(self.net)
             eval_mcts = MonteCarloTreeSearch(self.eval_net)
             evaluator = Evaluate(current_mcts, eval_mcts, self.game)
@@ -167,12 +180,12 @@ class Train:
             win_rate = wins / played if played > 0 else 0.0
             print(f"Eval  wins={wins}  losses={losses}  win_rate={win_rate:.2f}")
 
-            if win_rate > CFG.eval_win_rate:
+            # 직전 모델보다 약하지 않으면 best_model 갱신 (학습은 이미 채택됨)
+            if win_rate >= 0.5:
                 print("New best model saved.")
                 self.net.save_model("best_model")
             else:
-                print("Previous model kept.")
-                self.net.load_model()
+                print("best_model 유지 (단, 학습 결과는 current_model 로 누적됨).")
 
     # ----------------------------------------------------------------
 
